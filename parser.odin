@@ -6,7 +6,12 @@ import "core:fmt"
 Module :: struct {
 	decls: map[string]Decl,
 }
-Stmt :: union #no_nil {
+
+Stmt :: struct {
+	sep_before: bool, // if true, is appended to output without checking that a space is between them
+	kind:       StmtKind,
+}
+StmtKind :: union #no_nil {
 	Ident,
 	StrLiteral,
 	BoolLiteral,
@@ -65,10 +70,14 @@ Logical :: struct {
 	op: LogicalOp,
 }
 LogicalOp :: enum {
-	Eq,
-	NotEq,
 	And,
 	Or,
+	Equal,
+	NotEqual,
+	Less,
+	Greater,
+	LessEqual,
+	GreaterEqual,
 }
 
 And :: struct {
@@ -98,7 +107,7 @@ drop_module :: proc(mod: ^Module, allocator := context.allocator) {
 	}
 }
 drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
-	switch s in stmt {
+	switch s in stmt.kind {
 	case Ident:
 	case StrLiteral:
 	case BoolLiteral:
@@ -140,7 +149,7 @@ drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 Error :: Maybe(string)
 parse_module :: proc(tokens: []Token, allocator: runtime.Allocator) -> (mod: Module, err: Error) {
 	tokens := tokens
-	parser := Parser{&tokens, allocator, nil}
+	parser := Parser{&tokens, allocator, nil, false}
 	mod.decls = make(map[string]Decl, allocator)
 	defer if err != nil {
 		drop_module(&mod)
@@ -153,7 +162,7 @@ parse_module :: proc(tokens: []Token, allocator: runtime.Allocator) -> (mod: Mod
 
 	for len(tokens) > 0 {
 		stmt := parse_stmt(&parser) or_return
-		if decl, ok := stmt.(Decl); ok {
+		if decl, ok := stmt.kind.(Decl); ok {
 			mod.decls[decl.ident] = decl
 		} else {
 			err_str := fmt.tprint("top level scope only allows decls, got:", stmt)
@@ -203,12 +212,46 @@ accept :: proc "contextless" (tokens: ^[]Token, wanted_ty: TokenTy) -> (ok: bool
 }
 
 
-parse_stmt :: parse_or
+parse_stmt :: parse_plus_chain
+
+
+token_is_connected_to_prev :: proc "contextless" (ty: TokenTy) -> bool {
+	#partial switch ty {
+	case .StringCurlyStart, .Plus, .StringCurlyStartAndEnd:
+		return true
+	}
+	return false
+}
+
+parse_plus_chain :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
+	stmt = parse_or(parser) or_return
+	if len(tokens) > 0 &&
+	   (parser.next_stmt_no_sep_before || token_is_connected_to_prev(tokens[0].ty)) {
+		statements := make([dynamic]Stmt, parser.allocator)
+		defer if err != nil {
+			for &s in statements {
+				drop_stmt(&s)
+			}
+			delete(statements)
+		}
+		append(&statements, stmt)
+		for {
+			other := parse_or(parser) or_return
+			append(&statements, other)
+			if len(tokens) <= 0 ||
+			   (!parser.next_stmt_no_sep_before && !token_is_connected_to_prev(tokens[0].ty)) {
+				break
+			}
+		}
+		stmt.kind = Block{statements[:]}
+	}
+	return stmt, nil
+}
 parse_or :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	stmt = parse_and(parser) or_return
 	if accept(tokens, .Or) {
 		other := parse_and(parser) or_return
-		return Logical{new_clone(stmt, allocator), new_clone(other, allocator), .Or}, nil
+		stmt.kind = Logical{new_clone(stmt, allocator), new_clone(other, allocator), .Or}
 	}
 	return stmt, nil
 }
@@ -216,34 +259,61 @@ parse_and :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	stmt = parse_cmp(parser) or_return
 	if accept(tokens, .And) {
 		other := parse_cmp(parser) or_return
-		return Logical{new_clone(stmt, allocator), new_clone(other, allocator), .And}, nil
+		stmt.kind = Logical{new_clone(stmt, allocator), new_clone(other, allocator), .And}
 	}
 	return stmt, nil
 }
 parse_cmp :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	stmt = parse_single(parser) or_return
-	if accept(tokens, .EqualEqual) {
-		other := parse_single(parser) or_return
-		return Logical{new_clone(stmt, allocator), new_clone(other, allocator), .Eq}, nil
-	} else if accept(tokens, .NotEqual) {
-		other := parse_single(parser) or_return
-		return Logical{new_clone(stmt, allocator), new_clone(other, allocator), .NotEq}, nil
+
+
+	TokenAndOp :: struct {
+		ty: TokenTy,
+		op: LogicalOp,
+	}
+	TABLE :: [?]TokenAndOp {
+		{.NotEqual, .NotEqual},
+		{.EqualEqual, .Equal},
+		{.Greater, .Greater},
+		{.Less, .Less},
+		{.GreaterEqual, .GreaterEqual},
+		{.LessEqual, .LessEqual},
+	}
+	for t in TABLE {
+		if accept(tokens, t.ty) {
+			other := parse_single(parser) or_return
+			stmt.kind = Logical{new_clone(stmt, allocator), new_clone(other, allocator), t.op}
+			break
+		}
 	}
 	return stmt, nil
 }
 
 
 Parser :: struct {
-	tokens:    ^[]Token,
-	allocator: runtime.Allocator,
-	env_stack: [dynamic]map[string]None,
+	tokens:                  ^[]Token,
+	allocator:               runtime.Allocator,
+	env_stack:               [dynamic]map[string]None,
+	next_stmt_no_sep_before: bool,
 }
 None :: struct {}
 
+
+// tries to find regions in the string enclosed by `{}` that are used to  
+parse_string_literal :: proc(str: string) -> (stmt: Stmt, err: Error) {
+
+	unimplemented()
+}
+
 parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
+	stmt.sep_before = !accept(tokens, .Plus)
+	if parser.next_stmt_no_sep_before {
+		stmt.sep_before = false
+		parser.next_stmt_no_sep_before = false
+	}
 	is_not := accept(tokens, .Not)
 	defer if is_not && err == nil {
-		stmt = LogicalNot{new_clone(stmt, allocator)}
+		stmt.kind = LogicalNot{new_clone(stmt, allocator)}
 	}
 
 	tok, ok := eat(tokens)
@@ -251,20 +321,39 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		return {}, "no tokens left to start statement"
 	}
 	#partial switch tok.ty {
-	case .String:
-		return StrLiteral{str = tok.val.str}, nil
+	case .String, .StringCurlyStart, .StringCurlyEnd, .StringCurlyStartAndEnd:
+		// when curly start: no seperator between the content of pocket and the following part of string
+		if tok.ty == .StringCurlyStart || tok.ty == .StringCurlyStartAndEnd {
+			stmt.sep_before = false
+		}
+		// when curly end: no seperator between the content and the part of the string before:
+		if tok.ty == .StringCurlyEnd || tok.ty == .StringCurlyStartAndEnd {
+			parser.next_stmt_no_sep_before = true
+		}
+		stmt.kind = StrLiteral{tok.val.str}
+		return
 	case .Number:
-		return IntLiteral{number = tok.val.number}, nil
+		stmt.kind = IntLiteral {
+			number = tok.val.number,
+		}
+		return
 	case .Return:
-		return ReturnStmt{}, nil
+		stmt.kind = ReturnStmt{}
+		return
 	case .Todo:
-		return TodoStmt{}, nil
+		stmt.kind = TodoStmt{}
+		return
 	case .Ident:
 		ident := tok.val.str
 		if accept(tokens, .Equal) {
 			// parse foo = ... statement
 			value := parse_single(parser) or_return
-			return Decl{ident = ident, args = nil, value = new_clone(value, allocator)}, nil
+			stmt.kind = Decl {
+				ident = ident,
+				args  = nil,
+				value = new_clone(value, allocator),
+			}
+			return
 		} else if accept(tokens, .LeftParen) {
 			if tok_behind, ok := token_behind_next_closing_paren(tokens^);
 			   ok && tok_behind == .Equal {
@@ -311,39 +400,17 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 				}
 				assert(accept(tokens, .Equal))
 				value := parse_stmt(parser) or_return
-				return Decl{ident, decl_args[:], new_clone(value)}, nil
+				stmt.kind = Decl{ident, decl_args[:], new_clone(value)}
+				return
 			} else {
 				// expect function call
 				args := parse_stmts_until(parser, .RightParen) or_return
 				if len(args) == 0 {
 					return {}, "zero args in function call"
 				}
-				return Call{ident, args}, nil
+				stmt.kind = Call{ident, args}
+				return
 			}
-
-
-			// args := parse_stmts_until(tokens, .RightParen, allocator) or_return
-			// if len(args) == 0 {
-			// 	return {}, "zero args in function def/call"
-			// }
-			// if accept(tokens, .Equal) {
-			// 	// expect a fn def, where all arg names are idents: foo(one, bar, world) = ...
-			// 	arg_names := make([]Ident, len(args), allocator)
-			// 	for a, idx in args {
-			// 		if ident, ok := a.(Ident); ok {
-			// 			arg_names[idx] = ident
-			// 		} else {
-			// 			delete(args, allocator)
-			// 			delete(arg_names, allocator)
-			// 			return stmt, fmt.tprint("arg names should be idents in fn def, got:", a)
-			// 		}
-			// 	}
-			// 	value := parse_single(tokens, allocator) or_return
-			// 	return Decl{ident, arg_names, new_clone(value, allocator)}, nil
-			// } else {
-			// 	// this is a function call. e.g. foo("Hello", bar, world)
-			// 	return Call{ident, args}, nil
-			// }
 		} else {
 			// just single ident expression
 			is_arg := false
@@ -351,31 +418,46 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 				cur_env := env_stack[len(env_stack) - 1]
 				is_arg = ident in cur_env
 			}
-			return Ident{ident, is_arg}, nil
+			stmt.kind = Ident{ident, is_arg}
+			return
 		}
 	case .If:
 		condition := parse_stmt(parser) or_return
 		defer if err != nil {
 			drop_stmt(&condition)
 		}
+		// pass the no_sep_before flag to first child instead:
+		if !stmt.sep_before {
+			parser.next_stmt_no_sep_before = true
+		}
 		body := parse_stmt(parser) or_return
 		if accept(tokens, .Else) {
 			defer if err != nil {
 				drop_stmt(&body)
 			}
+			// pass the no_sep_before to the else branch as well:
+			if !stmt.sep_before {
+				parser.next_stmt_no_sep_before = true
+			}
 			else_body := parse_stmt(parser) or_return
-			return IfStmt{new_clone(condition), new_clone(body), new_clone(else_body)}, nil
+			stmt.kind = IfStmt{new_clone(condition), new_clone(body), new_clone(else_body)}
+			return
 		} else {
-			return IfStmt{new_clone(condition), new_clone(body), nil}, nil
+			stmt.kind = IfStmt{new_clone(condition), new_clone(body), nil}
+			return
 		}
 	case .LeftBrace:
+		if !stmt.sep_before {
+			parser.next_stmt_no_sep_before = true
+		}
 		statements := parse_stmts_until(parser, .RightBrace) or_return
-		return Block{statements}, nil
+		stmt.kind = Block{statements}
+		return
 	case .LeftBracket:
 		// for lookup tables e.g. ["HELLO" = "hallo", "WHATSUP" = "wie geht's?"]
 		unimplemented()
 	}
-	return {}, "invalid start of expression"
+	return {}, tprint("invalid start of expression", tok)
 }
 
 token_behind_next_closing_paren :: proc(tokens: []Token) -> (token_ty: TokenTy, ok: bool) {
@@ -407,6 +489,9 @@ token_behind_next_closing_paren :: proc(tokens: []Token) -> (token_ty: TokenTy, 
 parse_stmts_until :: proc(using parser: ^Parser, until: TokenTy) -> (stmts: []Stmt, err: Error) {
 	arr := make([dynamic]Stmt, allocator)
 	defer if err != nil {
+		for &stmt in arr {
+			drop_stmt(&stmt)
+		}
 		delete(arr)
 	}
 	stmt_loop: for {

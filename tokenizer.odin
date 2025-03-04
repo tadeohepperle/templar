@@ -3,34 +3,45 @@ import "core:strconv"
 import "core:unicode/utf8"
 
 Tokenizer :: struct {
-	source:  string,
-	current: Char,
-	peek:    Char,
-	line:    int,
-	col:     int,
+	source:             string,
+	current:            Char,
+	peek:               Char,
+	line:               int,
+	col:                int,
+	brace_depth:        int,
+	string_brace_depth: int,
 }
 Char :: struct {
 	ty:       CharType,
+	ru:       rune,
 	byte_idx: int,
 	size:     int,
 }
 advance :: proc(using this: ^Tokenizer) {
 	current = peek
 	peek.byte_idx += peek.size
-	ch: rune
-	ch, peek.size = utf8.decode_rune(source[peek.byte_idx:])
-	peek.ty = char_type(ch)
+	peek.ru, peek.size = utf8.decode_rune(source[peek.byte_idx:])
+	peek.ty = char_type(peek.ru)
+}
+advance_back :: proc(using this: ^Tokenizer) {
+
+	peek = current
+	current.ru, current.size = utf8.decode_last_rune(source[:current.byte_idx])
+	current.byte_idx -= current.size
+	current.ty = char_type(current.ru)
+
+	print("advance back")
 }
 
 Token :: struct {
 	ty:        TokenTy,
 	using val: struct #raw_union {
-		str:    string,
-		number: int,
+		str:     string,
+		number:  int,
+		is_true: bool,
 	},
 	byte_idx:  int,
 }
-
 
 TokenTy :: enum {
 	Error,
@@ -54,7 +65,10 @@ TokenTy :: enum {
 	Colon,
 	In,
 	Ident,
-	String,
+	String, // "Hello"
+	StringCurlyStart, //  } and I love you!"
+	StringCurlyEnd, // "Hello I am {
+	StringCurlyStartAndEnd, // } years old and live in {
 	Number,
 	Dot,
 	Plus,
@@ -104,6 +118,39 @@ read_number :: proc(s: ^Tokenizer) -> Token {
 	return Token{.Number, {number = int(int_value)}, start_byte}
 }
 
+advance_to_get_string_token :: proc(s: ^Tokenizer, curly_start: bool) -> Token {
+	start_byte := s.current.byte_idx
+	was_ended_by_left_brace := false
+	for s.peek.ty != .DoubleQuote && s.peek.size > 0 {
+		if s.peek.ty == .LeftBrace {
+			if s.string_brace_depth != min(int) {
+				return Token {
+					.Error,
+					{str = "Cannot stack multiple string literals with curly braces"},
+					s.peek.byte_idx,
+				}
+			}
+			s.brace_depth += 1
+			s.string_brace_depth = s.brace_depth
+			was_ended_by_left_brace = true
+			break
+		}
+		advance(s)
+	}
+	string_content := s.source[start_byte + 1:s.peek.byte_idx]
+	token_ty: TokenTy = ---
+	if was_ended_by_left_brace {
+		token_ty = .StringCurlyStartAndEnd if curly_start else .StringCurlyEnd
+		// don't skip over last `{`, instead let it get handled twice by the tokonizer, to enclose everything inside the pocket as a block
+	} else {
+		s.string_brace_depth = min(int)
+		token_ty = .StringCurlyStart if curly_start else .String
+		advance(s) // skip over last DoubleQuote or an opening LeftBrace
+	}
+	token := Token{token_ty, {str = string_content}, start_byte}
+	return token
+}
+
 read_token :: proc(s: ^Tokenizer) -> Token {
 	#partial switch s.current.ty {
 	case .WhiteSpace, .Comma:
@@ -127,16 +174,39 @@ read_token :: proc(s: ^Tokenizer) -> Token {
 		ty := ident_or_keyword_token(ident_name)
 		return Token{ty, {str = ident_name}, start_byte}
 	case .DoubleQuote:
-		start_byte := s.current.byte_idx
-		for s.peek.ty != .DoubleQuote {
-			advance(s)
+		return advance_to_get_string_token(s, false)
+	case .LeftBrace:
+		s.brace_depth += 1
+		return Token{.LeftBrace, {}, s.current.byte_idx}
+	case .RightBrace:
+		if s.string_brace_depth + 1 == s.brace_depth {
+			s.brace_depth -= 1
+			print("meet brace +1")
+			tok := Token{.RightBrace, {}, s.current.byte_idx}
+			advance_back(s)
+			return tok
+		} else if s.string_brace_depth == s.brace_depth {
+			s.string_brace_depth = min(int)
+			s.brace_depth -= 1
+			print("meet brace")
+			return advance_to_get_string_token(s, true)
+		} else {
+			print("meet other brace")
+			s.brace_depth -= 1
+			return Token{.RightBrace, {}, s.current.byte_idx}
 		}
-		string_content := s.source[start_byte + 1:s.peek.byte_idx]
-		token := Token{.String, {str = string_content}, start_byte}
-		advance(s) // skip over last doublequote
-		return token
+	case .LeftBracket:
+		return Token{.LeftBracket, {}, s.current.byte_idx}
+	case .RightBracket:
+		return Token{.RightBracket, {}, s.current.byte_idx}
+	case .LeftParen:
+		return Token{.LeftParen, {}, s.current.byte_idx}
+	case .RightParen:
+		return Token{.RightParen, {}, s.current.byte_idx}
 	case .Colon:
 		return Token{.Colon, {}, s.current.byte_idx}
+	case .Plus:
+		return Token{.Plus, {}, s.current.byte_idx}
 	case .Numeric:
 		return read_number(s)
 	case .Equal:
@@ -146,6 +216,27 @@ read_token :: proc(s: ^Tokenizer) -> Token {
 			return tok
 		} else {
 			return Token{.Equal, {}, s.current.byte_idx}
+		}
+	case .Slash:
+		if s.peek.ty == .Slash {
+			// Double Slash is a comment. Skip over the comment line
+			// skip everything until end of line:
+			advance(s)
+			for {
+				advance(s)
+				if s.current.ru == '\n' {
+					break
+				} else if s.current.byte_idx == s.peek.byte_idx {
+					return {.Eof, {}, s.current.byte_idx - 1}
+				}
+			}
+			return read_token(s)
+		} else {
+			return {
+				.Error,
+				{str = "expected double slash, only got single slash!"},
+				s.current.byte_idx,
+			}
 		}
 	case .Dot:
 		// ... for Todo statement
@@ -187,18 +278,6 @@ read_token :: proc(s: ^Tokenizer) -> Token {
 		} else {
 			return Token{.Not, {}, s.current.byte_idx}
 		}
-	case .LeftBrace:
-		return Token{.LeftBrace, {}, s.current.byte_idx}
-	case .RightBrace:
-		return Token{.RightBrace, {}, s.current.byte_idx}
-	case .LeftBracket:
-		return Token{.LeftBracket, {}, s.current.byte_idx}
-	case .RightBracket:
-		return Token{.RightBracket, {}, s.current.byte_idx}
-	case .LeftParen:
-		return Token{.LeftParen, {}, s.current.byte_idx}
-	case .RightParen:
-		return Token{.RightParen, {}, s.current.byte_idx}
 	}
 	return Token{.Error, {str = s.source[s.current.byte_idx:]}, s.current.byte_idx}
 }
@@ -213,7 +292,8 @@ tokenize :: proc(
 	tokens: [dynamic]Token = make([dynamic]Token, allocator)
 
 	s := Tokenizer {
-		source = source,
+		source             = source,
+		string_brace_depth = min(int),
 	}
 	advance(&s)
 	for {
@@ -248,6 +328,7 @@ CharType :: enum u8 {
 	Minus,
 	Plus,
 	Colon,
+	Slash,
 	Bang,
 	Equal,
 	Greater,
@@ -281,6 +362,7 @@ char_types :: proc() -> (table: [256]CharType) {
 	set(&table, ")", .RightParen)
 	set(&table, ".", .Dot)
 	set(&table, "|", .Pipe)
+	set(&table, "/", .Slash)
 	set(&table, "-", .Minus)
 	set(&table, "+", .Plus)
 	set(&table, ":", .Colon)

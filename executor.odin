@@ -8,7 +8,10 @@ builder :: proc(allocator := context.temp_allocator) -> (b: Builder) {
 	strings.builder_init(&b, allocator)
 	return b
 }
-write :: strings.write_string
+
+write :: #force_inline proc(b: ^Builder, s: string) {
+	append(&b.buf, s)
+}
 tprint :: fmt.tprint
 Value :: union {
 	string,
@@ -28,13 +31,34 @@ value_to_ty :: proc "contextless" (val: Value) -> Type {
 }
 
 run :: proc(source: string, decl_name: string, arg_values: []Value) -> (res: string, err: Error) {
-	STR :: `FOO = {"Hello" " World!"}`
 	tokens := tokenize(source) or_return
-	print(tokens)
+	for tok in tokens {
+		print(tok)
+		#partial switch tok.ty {
+		case .Ident:
+			print("   ", tok.str)
+		case .String:
+			print("   ", tok.str)
+			print("   ", len(tok.str))
+		case .Number:
+			print("   ", tok.number)
+		}
+	}
 	mod := parse_module(tokens, context.allocator) or_return
-	res = execute(mod, "FOO", arg_values) or_return
+	res = execute(mod, decl_name, arg_values) or_return
 	drop_module(&mod)
 	return res, nil
+}
+
+run_and_show :: proc(source: string, decl_name: string, arg_values: ..Value) {
+	res, err := run(source, decl_name, arg_values)
+	if err, is_err := err.(string); is_err {
+		print("ERROR:")
+		print(err)
+	} else {
+		print("SUCCESS:")
+		print(res)
+	}
 }
 
 execute :: proc(
@@ -48,21 +72,21 @@ execute :: proc(
 ) {
 	if decl, ok := module.decls[decl_name]; ok {
 		// shortcut for simple key value declarations:
-		if str_literal, ok := decl.value.(StrLiteral); ok {
+		if str_literal, ok := decl.value.kind.(StrLiteral); ok {
 			return str_literal.str, nil
 		}
 
-		b := builder(allocator)
-		defer if err != nil {
-			delete(b.buf)
-		}
 
 		env := env_for_values(arg_values, decl.args) or_return
-		err := _execute_stmt(module, decl.value^, env, &b)
+		ctx := ExecutionCtx{module, env, builder(allocator), false}
+		defer if err != nil {
+			delete(ctx.b.buf)
+		}
+		err := _execute_stmt(&ctx, decl.value^)
 		if err, is_err := err.(string); is_err {
 			return {}, err
 		}
-		return strings.to_string(b), nil
+		return strings.to_string(ctx.b), nil
 	} else {
 		return {}, tprint("ERROR(", decl_name, " is undefined)", sep = "")
 	}
@@ -91,45 +115,69 @@ ErrorOrReturn :: union {
 Return :: struct {}
 
 
-_execute_stmt :: proc(module: Module, stmt: Stmt, env: Env, b: ^Builder) -> ErrorOrReturn {
-	switch stmt in stmt {
+ExecutionCtx :: struct {
+	module:        Module,
+	env:           Env,
+	b:             Builder,
+	no_sep_before: bool,
+}
+
+
+_ctx_maybe_space :: #force_inline proc(ctx: ^ExecutionCtx) {
+	if !ctx.no_sep_before {
+		if len(ctx.b.buf) > 0 && ctx.b.buf[len(ctx.b.buf) - 1] != ' ' {
+			append(&ctx.b.buf, ' ')
+		}
+	} else {
+		ctx.no_sep_before = false
+	}
+}
+_execute_stmt :: proc(using ctx: ^ExecutionCtx, stmt: Stmt) -> ErrorOrReturn {
+	if ctx.no_sep_before || !stmt.sep_before {
+		ctx.no_sep_before = true
+	}
+	switch this in stmt.kind {
 	case Ident:
-		if stmt.is_arg {
-			val, ok := env[stmt.ident]
+		if this.is_arg {
+			val, ok := env[this.ident]
 			if !ok {
-				return tprint("No arg named", stmt.ident)
+				return tprint("No arg named", this.ident)
 			}
-			_write_value(val, b)
+			_ctx_maybe_space(ctx)
+			_write_value(val, &b)
 		} else {
-			decl, ok := module.decls[stmt.ident]
+			decl, ok := module.decls[this.ident]
 			if !ok {
-				return tprint("No declaration named", stmt.ident)
+				return tprint("No declaration named", this.ident)
 			}
 			if len(decl.args) > 0 {
-				return tprint("ident refers to decl", stmt.ident, "but is used with no args")
+				return tprint("ident refers to decl", this.ident, "but is used with no args")
 			}
-			return _execute_stmt(module, decl.value^, nil, b) // redirect to the other def
+			return _execute_stmt(ctx, decl.value^) // redirect to the other def
 		}
 	case StrLiteral:
-		write(b, stmt.str)
+		_ctx_maybe_space(ctx)
+		write(&b, this.str)
 	case BoolLiteral:
-		fmt.sbprint(b, stmt.is_true)
+		_ctx_maybe_space(ctx)
+		fmt.sbprint(&b, this.is_true)
 	case IntLiteral:
-		fmt.sbprint(b, stmt.number)
+		_ctx_maybe_space(ctx)
+		fmt.sbprint(&b, this.number)
 	case Call:
-		decl, ok := module.decls[stmt.ident]
+		decl, ok := module.decls[this.ident]
 		if !ok {
-			return tprint("No declaration named", stmt.ident)
+			return tprint("No declaration named", this.ident)
 		}
 		if len(decl.args) == 0 {
 			return tprint("call expression should have 1 or more args")
 		}
-		if len(decl.args) != len(stmt.args) {
-			return tprint("invalid number of arguments, expected:", decl.args, ", got:", stmt.args)
+		if len(decl.args) != len(this.args) {
+			return tprint("invalid number of arguments, expected:", decl.args, ", got:", this.args)
 		}
 		call_env := make(Env, context.temp_allocator)
 		for decl_arg, idx in decl.args {
-			call_arg := stmt.args[idx]
+			call_arg := this.args[idx]
 			call_arg_val, call_arg_eval_err := _evaluate_stmt(module, call_arg, env)
 			if err, is_err := call_arg_eval_err.(string); is_err {
 				return err
@@ -139,18 +187,18 @@ _execute_stmt :: proc(module: Module, stmt: Stmt, env: Env, b: ^Builder) -> Erro
 			}
 			call_env[decl_arg.name] = call_arg_val
 		}
-		call_res := _execute_stmt(module, decl.value^, call_env, b)
+		call_res := _execute_stmt(ctx, decl.value^)
 		// check for err or Return{}, ignore Return{}, because we don't want an inner return to bubble up through calling parent functions...
 		if call_err, has_err := call_res.(string); has_err {
 			return call_err
 		}
 		return nil
 	case Block:
-		for child in stmt.statements {
-			_execute_stmt(module, child, env, b) or_return
+		for child in this.statements {
+			_execute_stmt(ctx, child) or_return
 		}
 	case IfStmt:
-		cond_val, cond_val_err := _evaluate_stmt(module, stmt.condition^, env)
+		cond_val, cond_val_err := _evaluate_stmt(module, this.condition^, env)
 		if err, has_err := cond_val_err.(string); has_err {
 			return err
 		}
@@ -159,9 +207,9 @@ _execute_stmt :: proc(module: Module, stmt: Stmt, env: Env, b: ^Builder) -> Erro
 			return tprint("condition for if-statement needs to be bool, got: ", cond_val)
 		}
 		if cond_val_is_true {
-			_execute_stmt(module, stmt.body^, env, b) or_return
-		} else if else_body, has_else := stmt.else_body.(^Stmt); has_else {
-			_execute_stmt(module, else_body^, env, b) or_return
+			_execute_stmt(ctx, this.body^) or_return
+		} else if else_body, has_else := this.else_body.(^Stmt); has_else {
+			_execute_stmt(ctx, else_body^) or_return
 		}
 	case Decl:
 		return nil
@@ -189,36 +237,37 @@ _write_value :: proc(val: Value, b: ^Builder) {
 }
 
 _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err: Error) {
-	switch stmt in stmt {
+	switch this in stmt.kind {
 	case Ident:
-		if stmt.is_arg {
-			val, ok := env[stmt.ident]
+		if this.is_arg {
+			val, ok := env[this.ident]
 			if !ok {
-				return nil, tprint("No arg named", stmt.ident)
+				return nil, tprint("No arg named", this.ident)
 			}
 			return val, nil
 		} else {
-			decl, ok := module.decls[stmt.ident]
+			decl, ok := module.decls[this.ident]
 			if !ok {
-				return nil, tprint("No declaration named", stmt.ident)
+				return nil, tprint("No declaration named", this.ident)
 			}
 			if len(decl.args) > 0 {
-				return nil, tprint("ident refers to decl", stmt.ident, "but is used with no args")
+				return nil, tprint("ident refers to decl", this.ident, "but is used with no args")
 			}
 			return _evaluate_stmt(module, decl.value^, nil) // redirect to the other def
 		}
 	case StrLiteral:
-		return stmt.str, nil
+		return this.str, nil
 	case BoolLiteral:
-		return stmt.is_true, nil
+		return this.is_true, nil
 	case IntLiteral:
-		return stmt.number, nil
+		return this.number, nil
 	case Call:
 		unimplemented("getting return values from calls not supported yet")
 	case Block:
 		b := builder()
-		loop: for child in stmt.statements {
-			switch return_or_err in _execute_stmt(module, child, env, &b) {
+		ctx := ExecutionCtx{module, env, b, false}
+		loop: for child in this.statements {
+			switch return_or_err in _execute_stmt(&ctx, child) {
 			case Return:
 				break loop
 			case string:
@@ -231,13 +280,13 @@ _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err
 	case Decl:
 		return nil, "declaration cannot be evaluated"
 	case Logical:
-		a_val := _evaluate_stmt(module, stmt.a^, env) or_return
-		b_val := _evaluate_stmt(module, stmt.b^, env) or_return
-		op := stmt.op
+		a_val := _evaluate_stmt(module, this.a^, env) or_return
+		b_val := _evaluate_stmt(module, this.b^, env) or_return
+		op := this.op
 		switch op {
 		case .And, .Or:
 			a_bool, a_is_bool := a_val.(bool)
-			b_bool, b_is_bool := a_val.(bool)
+			b_bool, b_is_bool := b_val.(bool)
 			if !a_is_bool || !b_is_bool {
 				return nil, tprint(
 					"operation",
@@ -253,13 +302,37 @@ _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err
 			} else {
 				return a_bool || b_bool, nil // todo! could short-circuit here for .Or, no need to evaluate b!
 			}
-		case .Eq, .NotEq:
+		case .Equal, .NotEqual:
 			is_same := a_val == b_val
-			if op == .Eq {
+			if op == .Equal {
 				return is_same, nil
 			} else {
 				return !is_same, nil
 			}
+		case .Less, .Greater, .LessEqual, .GreaterEqual:
+			a_num, a_is_int := a_val.(int)
+			b_num, b_is_int := b_val.(int)
+			if !a_is_int || !b_is_int {
+				return nil, tprint(
+					"operation",
+					op,
+					" only accepts int values, got:",
+					a_val,
+					", ",
+					b_val,
+				)
+			}
+			#partial switch op {
+			case .Less:
+				return a_num < b_num, nil
+			case .Greater:
+				return a_num > b_num, nil
+			case .LessEqual:
+				return a_num <= b_num, nil
+			case .GreaterEqual:
+				return a_num >= b_num, nil
+			}
+			unreachable()
 		}
 		panic("invalid op, should have been handled above")
 	case LogicalNot:
