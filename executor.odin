@@ -2,6 +2,8 @@ package templar
 
 import "core:fmt"
 import "core:strings"
+import "core:unicode"
+import "core:unicode/utf8"
 
 Builder :: strings.Builder
 builder :: proc(allocator := context.temp_allocator) -> (b: Builder) {
@@ -32,18 +34,18 @@ value_to_ty :: proc "contextless" (val: Value) -> Type {
 
 run :: proc(source: string, decl_name: string, arg_values: []Value) -> (res: string, err: Error) {
 	tokens := tokenize(source) or_return
-	for tok in tokens {
-		print(tok)
-		#partial switch tok.ty {
-		case .Ident:
-			print("   ", tok.str)
-		case .String:
-			print("   ", tok.str)
-			print("   ", len(tok.str))
-		case .Number:
-			print("   ", tok.number)
-		}
-	}
+	// for tok in tokens {
+	// 	print(tok)
+	// 	#partial switch tok.ty {
+	// 	case .Ident:
+	// 		print("   ", tok.str)
+	// 	case .String:
+	// 		print("   ", tok.str)
+	// 		print("   ", len(tok.str))
+	// 	case .Number:
+	// 		print("   ", tok.number)
+	// 	}
+	// }
 	mod := parse_module(tokens, context.allocator) or_return
 	res = execute(mod, decl_name, arg_values) or_return
 	drop_module(&mod)
@@ -78,7 +80,7 @@ execute :: proc(
 
 
 		env := env_for_values(arg_values, decl.args) or_return
-		ctx := ExecutionCtx{module, env, builder(allocator), false}
+		ctx := ExecutionCtx{module, env, builder(allocator), false, false}
 		defer if err != nil {
 			delete(ctx.b.buf)
 		}
@@ -116,14 +118,15 @@ Return :: struct {}
 
 
 ExecutionCtx :: struct {
-	module:        Module,
-	env:           Env,
-	b:             Builder,
-	no_sep_before: bool,
+	module:          Module,
+	env:             Env,
+	b:               Builder,
+	no_sep_before:   bool,
+	capitalize_next: bool,
 }
 
 
-_ctx_maybe_space :: #force_inline proc(ctx: ^ExecutionCtx) {
+_ctx_write_value :: #force_inline proc(ctx: ^ExecutionCtx, val: Value) {
 	if !ctx.no_sep_before {
 		if len(ctx.b.buf) > 0 && ctx.b.buf[len(ctx.b.buf) - 1] != ' ' {
 			append(&ctx.b.buf, ' ')
@@ -131,20 +134,39 @@ _ctx_maybe_space :: #force_inline proc(ctx: ^ExecutionCtx) {
 	} else {
 		ctx.no_sep_before = false
 	}
+	switch val in val {
+	case string:
+		if ctx.capitalize_next {
+			ru, ru_size := utf8.decode_rune(val)
+			if ru_size > 0 {
+				ru_upper := unicode.to_upper(ru)
+				strings.write_rune(&ctx.b, ru_upper) // first character in uppercase
+				write(&ctx.b, val[ru_size:]) // rest of string
+			}
+		} else {
+			write(&ctx.b, val)
+		}
+	case int:
+		fmt.sbprint(&ctx.b, val)
+	case bool:
+		fmt.sbprint(&ctx.b, val)
+	}
+	ctx.capitalize_next = false
 }
 _execute_stmt :: proc(using ctx: ^ExecutionCtx, stmt: Stmt) -> ErrorOrReturn {
 	if ctx.no_sep_before || !stmt.sep_before {
 		ctx.no_sep_before = true
 	}
 	switch this in stmt.kind {
+	case CapitalizeStmt:
+		ctx.capitalize_next = true
 	case Ident:
 		if this.is_arg {
 			val, ok := env[this.ident]
 			if !ok {
 				return tprint("No arg named", this.ident)
 			}
-			_ctx_maybe_space(ctx)
-			_write_value(val, &b)
+			_ctx_write_value(ctx, val)
 		} else {
 			decl, ok := module.decls[this.ident]
 			if !ok {
@@ -156,14 +178,11 @@ _execute_stmt :: proc(using ctx: ^ExecutionCtx, stmt: Stmt) -> ErrorOrReturn {
 			return _execute_stmt(ctx, decl.value^) // redirect to the other def
 		}
 	case StrLiteral:
-		_ctx_maybe_space(ctx)
-		write(&b, this.str)
+		_ctx_write_value(ctx, this.str)
 	case BoolLiteral:
-		_ctx_maybe_space(ctx)
-		fmt.sbprint(&b, this.is_true)
+		_ctx_write_value(ctx, this.is_true)
 	case IntLiteral:
-		_ctx_maybe_space(ctx)
-		fmt.sbprint(&b, this.number)
+		_ctx_write_value(ctx, this.number)
 	case Call:
 		decl, ok := module.decls[this.ident]
 		if !ok {
@@ -182,12 +201,19 @@ _execute_stmt :: proc(using ctx: ^ExecutionCtx, stmt: Stmt) -> ErrorOrReturn {
 			if err, is_err := call_arg_eval_err.(string); is_err {
 				return err
 			}
-			if value_to_ty(call_arg_val) != decl_arg.type {
+			if decl_arg.type != .Any && value_to_ty(call_arg_val) != decl_arg.type {
 				return tprint("value", call_arg_val, "has wrong type for arg", decl_arg)
 			}
 			call_env[decl_arg.name] = call_arg_val
 		}
-		call_res := _execute_stmt(ctx, decl.value^)
+		call_ctx := ExecutionCtx {
+			module        = ctx.module,
+			env           = call_env,
+			b             = ctx.b,
+			no_sep_before = ctx.no_sep_before,
+		}
+		call_res := _execute_stmt(&call_ctx, decl.value^)
+		ctx.b = call_ctx.b
 		// check for err or Return{}, ignore Return{}, because we don't want an inner return to bubble up through calling parent functions...
 		if call_err, has_err := call_res.(string); has_err {
 			return call_err
@@ -238,6 +264,8 @@ _write_value :: proc(val: Value, b: ^Builder) {
 
 _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err: Error) {
 	switch this in stmt.kind {
+	case CapitalizeStmt:
+		return nil, "#cap is not an expression that can be evaluated on its own!"
 	case Ident:
 		if this.is_arg {
 			val, ok := env[this.ident]
@@ -264,17 +292,24 @@ _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err
 	case Call:
 		unimplemented("getting return values from calls not supported yet")
 	case Block:
-		b := builder()
-		ctx := ExecutionCtx{module, env, b, false}
-		loop: for child in this.statements {
-			switch return_or_err in _execute_stmt(&ctx, child) {
-			case Return:
-				break loop
-			case string:
-				return nil, return_or_err
+		switch len(this.statements) {
+		case 0:
+			return nil, nil
+		case 1:
+			return _evaluate_stmt(module, this.statements[0], env)
+		case:
+			b := builder()
+			ctx := ExecutionCtx{module, env, b, false, false}
+			loop: for child in this.statements {
+				switch return_or_err in _execute_stmt(&ctx, child) {
+				case Return:
+					break loop
+				case string:
+					return nil, return_or_err
+				}
 			}
+			return strings.to_string(b), nil
 		}
-		return strings.to_string(b), nil
 	case IfStmt:
 		unimplemented()
 	case Decl:
@@ -303,7 +338,7 @@ _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err
 				return a_bool || b_bool, nil // todo! could short-circuit here for .Or, no need to evaluate b!
 			}
 		case .Equal, .NotEqual:
-			is_same := a_val == b_val
+			is_same: bool = a_val == b_val
 			if op == .Equal {
 				return is_same, nil
 			} else {

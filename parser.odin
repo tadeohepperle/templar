@@ -24,10 +24,12 @@ StmtKind :: union #no_nil {
 	LogicalNot,
 	ReturnStmt,
 	TodoStmt,
+	CapitalizeStmt,
 }
 Block :: struct {
 	statements: []Stmt,
 }
+CapitalizeStmt :: struct {}
 ReturnStmt :: struct {}
 TodoStmt :: struct {}
 Ident :: struct {
@@ -108,6 +110,7 @@ drop_module :: proc(mod: ^Module, allocator := context.allocator) {
 }
 drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 	switch s in stmt.kind {
+	case CapitalizeStmt:
 	case Ident:
 	case StrLiteral:
 	case BoolLiteral:
@@ -212,7 +215,7 @@ accept :: proc "contextless" (tokens: ^[]Token, wanted_ty: TokenTy) -> (ok: bool
 }
 
 
-parse_stmt :: parse_plus_chain
+parse_stmt :: parse_fmt_string
 
 
 token_is_connected_to_prev :: proc "contextless" (ty: TokenTy) -> bool {
@@ -223,10 +226,16 @@ token_is_connected_to_prev :: proc "contextless" (ty: TokenTy) -> bool {
 	return false
 }
 
-parse_plus_chain :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
+parse_fmt_string :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	stmt = parse_or(parser) or_return
-	if len(tokens) > 0 &&
-	   (parser.next_stmt_no_sep_before || token_is_connected_to_prev(tokens[0].ty)) {
+
+	// try to stitch together statements
+	if len(tokens) == 0 {
+		return stmt, nil
+	}
+
+	if _, ok := stmt.kind.(StrLiteral); ok && parser.next_stmt_no_sep_before {
+
 		statements := make([dynamic]Stmt, parser.allocator)
 		defer if err != nil {
 			for &s in statements {
@@ -234,14 +243,23 @@ parse_plus_chain :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 			}
 			delete(statements)
 		}
+
 		append(&statements, stmt)
 		for {
 			other := parse_or(parser) or_return
 			append(&statements, other)
-			if len(tokens) <= 0 ||
-			   (!parser.next_stmt_no_sep_before && !token_is_connected_to_prev(tokens[0].ty)) {
-				break
+
+			if len(tokens) > 0 {
+				if _, ok := other.kind.(StrLiteral); ok && parser.next_stmt_no_sep_before {
+					continue
+				}
+				next_ty := tokens[0].ty
+				if next_ty == .StringCurlyStart || next_ty == .StringCurlyStartAndEnd {
+					continue
+				}
 			}
+
+			break
 		}
 		stmt.kind = Block{statements[:]}
 	}
@@ -342,6 +360,9 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		return
 	case .Todo:
 		stmt.kind = TodoStmt{}
+		return
+	case .Capitalize:
+		stmt.kind = CapitalizeStmt{}
 		return
 	case .Ident:
 		ident := tok.val.str

@@ -11,14 +11,34 @@ main :: proc() {
 
 	// STR :: `TWO(x) = {x x}    FOO(s) = {if s == "tadeo" { "yay " TWO({ "buba"}) } else "nay"}`
 
-	STR :: `
-greeting(name, age) = "I am {name} and {age} years old."
-	`
+	run_and_show(`REROLLS_LEFT(x: int) = { x "Reroll" if x != 1 +"s" "left" }`, "REROLLS_LEFT", 1)
+	run_and_show(
+		`greeting(name, age) = "I am {name} and {more(age)} years old."    more(x) = {x +"000"}`,
+		"greeting",
+		"Tadeo",
+		24,
+	)
+	run_and_show(`three_times(x) = {x x x +"!"}`, "three_times", "boo")
+	run_and_show(`three_times(x) = "{x}-{x} {x}!"`, "three_times", "boo")
 
 
-	run_and_show(STR, "greeting", "Tadeo", 24)
-	// run_and_show(STR, "damage", 0, "a character", 2, true)
-	// run_and_show(STR, "three_times", "foo")
+	run_and_show(DAMAGE, "damage", 0, "a character", 2, true)
+	run_and_show(DAMAGE, "damage", 2, "a character", 1, true)
+	run_and_show(DAMAGE, "damage", 15, "a character", 0, false)
+	DAMAGE :: `
+	damage(x, to: str, range: int, is_fire: bool) = {
+		#cap "you deal" if x == 0 "no" else x
+		if is_fire and x > 0 "fire"
+		"damage to"
+		if range == 0 {
+			"yourself"
+		} else if range == 1 {
+			to "next to you"
+		} else {
+			to "who is" range "or less tiles apart from you"
+		}
+	}`
+
 
 }
 

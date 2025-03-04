@@ -24,13 +24,10 @@ advance :: proc(using this: ^Tokenizer) {
 	peek.ty = char_type(peek.ru)
 }
 advance_back :: proc(using this: ^Tokenizer) {
-
 	peek = current
 	current.ru, current.size = utf8.decode_last_rune(source[:current.byte_idx])
 	current.byte_idx -= current.size
 	current.ty = char_type(current.ru)
-
-	print("advance back")
 }
 
 Token :: struct {
@@ -80,6 +77,7 @@ TokenTy :: enum {
 	StringType,
 	Return,
 	Todo,
+	Capitalize,
 }
 ident_or_keyword_token :: proc(ident_name: string) -> TokenTy {
 	switch ident_name {
@@ -101,7 +99,9 @@ ident_or_keyword_token :: proc(ident_name: string) -> TokenTy {
 		return .StringType
 	case "return":
 		return .Return
-	case "todo":
+	case "#cap":
+		return .Capitalize
+	case "#todo":
 		return .Todo
 	}
 	return .Ident
@@ -181,17 +181,14 @@ read_token :: proc(s: ^Tokenizer) -> Token {
 	case .RightBrace:
 		if s.string_brace_depth + 1 == s.brace_depth {
 			s.brace_depth -= 1
-			print("meet brace +1")
 			tok := Token{.RightBrace, {}, s.current.byte_idx}
 			advance_back(s)
 			return tok
 		} else if s.string_brace_depth == s.brace_depth {
 			s.string_brace_depth = min(int)
 			s.brace_depth -= 1
-			print("meet brace")
 			return advance_to_get_string_token(s, true)
 		} else {
-			print("meet other brace")
 			s.brace_depth -= 1
 			return Token{.RightBrace, {}, s.current.byte_idx}
 		}
