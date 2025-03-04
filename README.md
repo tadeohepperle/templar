@@ -182,3 +182,9 @@ damage(x: int, to: str, range: int, is_fire: bool) {
 // damage(10, "a character", 1, true) == "You deal 10 fire damage to a character next to you"
 // damage(5, "a character", 0, false) == "You deal 5 damage to yourself"
 ```
+
+### What needs to improve:
+
+- error reporting, an LSP
+- maybe variables, right now everything is just pure functions.
+- maybe an interface checker that verifies that the translations for all languages follow the same pattern

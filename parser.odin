@@ -112,9 +112,11 @@ SwitchCase :: struct {
 
 drop_module :: proc(mod: ^Module, allocator := context.allocator) {
 	for ident, &decl in mod.decls {
-		delete(decl.args)
+		delete(decl.args, allocator)
 		drop_stmt(decl.value, allocator)
+		free(decl.value, allocator)
 	}
+	delete(mod.decls)
 }
 drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 	switch s in stmt.kind {
@@ -134,6 +136,9 @@ drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 		}
 		delete(s.args)
 	case Block:
+		for &child in s.statements {
+			drop_stmt(&child)
+		}
 		delete(s.statements)
 	case Decl:
 		delete(s.args)
@@ -159,20 +164,28 @@ drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 		for &ca in s.cases {
 			drop_stmt(&ca.body)
 		}
+		delete(s.cases)
+		if else_body, ok := s.else_body.(^Stmt); ok {
+			drop_stmt(else_body)
+			free(else_body)
+		}
 	}
 }
 
 Error :: Maybe(string)
 parse_module :: proc(tokens: []Token, allocator: runtime.Allocator) -> (mod: Module, err: Error) {
 	tokens := tokens
-	parser := Parser{&tokens, allocator, nil, false}
-	mod.decls = make(map[string]Decl, allocator)
-	defer if err != nil {
-		drop_module(&mod)
+	parser := Parser{&tokens, allocator, make([dynamic]map[string]None, context.allocator), false}
+	defer {
 		for env in parser.env_stack {
 			delete(env)
 		}
 		delete(parser.env_stack)
+	}
+
+	mod.decls = make(map[string]Decl, allocator)
+	defer if err != nil {
+		drop_module(&mod)
 	}
 
 
@@ -247,7 +260,6 @@ parse_fmt_string :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		return stmt, nil
 	}
 	if _, ok := stmt.kind.(StrLiteral); ok && parser.next_stmt_no_sep_before {
-
 		statements := make([dynamic]Stmt, parser.allocator)
 		defer if err != nil {
 			for &s in statements {
@@ -406,6 +418,8 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 						} else if accept(tokens, .StringType) {
 							decl_arg.type = .String
 						} else {
+							delete(decl_args)
+							delete(env)
 							return {}, "invalid type after colon, expected `bool` or `int`"
 						}
 					}
@@ -432,6 +446,7 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 				// expect function call
 				args := parse_stmts_until(parser, .RightParen) or_return
 				if len(args) == 0 {
+					delete(args)
 					return {}, "zero args in function call"
 				}
 				stmt.kind = Call{ident, args}
@@ -503,7 +518,8 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		if accept(tokens, .Else) {
 			// pass the no_sep_before to the else branch as well:
 			if !stmt.sep_before do parser.next_stmt_no_sep_before = true
-			else_body = new_clone(parse_stmt(parser) or_return)
+			else_b := parse_stmt(parser) or_return
+			else_body = new_clone(else_b)
 		}
 		stmt.kind = SwitchStmt{new_clone(condition), switch_cases[:], else_body}
 		return
@@ -513,7 +529,6 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		}
 		statements := parse_stmts_until(parser, .RightBrace) or_return
 		stmt.kind = Block{statements}
-
 		return
 	case .LeftBracket:
 		// for lookup tables e.g. ["HELLO" = "hallo", "WHATSUP" = "wie geht's?"]
@@ -570,7 +585,7 @@ parse_stmts_until :: proc(using parser: ^Parser, until: TokenTy) -> (stmts: []St
 		}
 		delete(arr)
 	}
-	stmt_loop: for {
+	for {
 		if accept(tokens, until) {
 			break
 		}

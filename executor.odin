@@ -47,8 +47,10 @@ run :: proc(source: string, decl_name: string, arg_values: []Value) -> (res: str
 	// 	}
 	// }
 	mod := parse_module(tokens, context.allocator) or_return
+	defer {
+		drop_module(&mod)
+	}
 	res = execute(mod, decl_name, arg_values) or_return
-	drop_module(&mod)
 	return res, nil
 }
 
@@ -103,7 +105,7 @@ env_for_values :: proc(values: []Value, decl_args: []DeclArg) -> (env: Env, err:
 	for val, idx in values {
 		decl_arg := decl_args[idx]
 		if decl_arg.type != .Any && value_to_ty(val) != decl_arg.type {
-			return nil, tprint("value", val, "has wrong type for arg", decl_arg)
+			return nil, tprint("value", val, "has wrong type for", decl_arg)
 		}
 		env[decl_arg.name] = val
 	}
