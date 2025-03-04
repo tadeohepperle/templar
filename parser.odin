@@ -25,6 +25,7 @@ StmtKind :: union #no_nil {
 	ReturnStmt,
 	TodoStmt,
 	CapitalizeStmt,
+	SwitchStmt,
 }
 Block :: struct {
 	statements: []Stmt,
@@ -93,13 +94,20 @@ Or :: struct {
 LogicalNot :: struct {
 	inner: ^Stmt,
 }
-// Logical :: struct {
-//     op: 
-// }
 IfStmt :: struct {
 	condition: ^Stmt,
 	body:      ^Stmt,
 	else_body: Maybe(^Stmt),
+}
+
+SwitchStmt :: struct {
+	condition: ^Stmt,
+	cases:     []SwitchCase,
+	else_body: Maybe(^Stmt),
+}
+SwitchCase :: struct {
+	val:  Value,
+	body: Stmt,
 }
 
 drop_module :: proc(mod: ^Module, allocator := context.allocator) {
@@ -145,7 +153,12 @@ drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 			drop_stmt(else_body)
 			free(else_body)
 		}
-
+	case SwitchStmt:
+		drop_stmt(s.condition)
+		free(s.condition)
+		for &ca in s.cases {
+			drop_stmt(&ca.body)
+		}
 	}
 }
 
@@ -233,7 +246,6 @@ parse_fmt_string :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	if len(tokens) == 0 {
 		return stmt, nil
 	}
-
 	if _, ok := stmt.kind.(StrLiteral); ok && parser.next_stmt_no_sep_before {
 
 		statements := make([dynamic]Stmt, parser.allocator)
@@ -316,13 +328,6 @@ Parser :: struct {
 }
 None :: struct {}
 
-
-// tries to find regions in the string enclosed by `{}` that are used to  
-parse_string_literal :: proc(str: string) -> (stmt: Stmt, err: Error) {
-
-	unimplemented()
-}
-
 parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	stmt.sep_before = !accept(tokens, .Plus)
 	if parser.next_stmt_no_sep_before {
@@ -368,7 +373,7 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		ident := tok.val.str
 		if accept(tokens, .Equal) {
 			// parse foo = ... statement
-			value := parse_single(parser) or_return
+			value := parse_stmt(parser) or_return
 			stmt.kind = Decl {
 				ident = ident,
 				args  = nil,
@@ -448,18 +453,14 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 			drop_stmt(&condition)
 		}
 		// pass the no_sep_before flag to first child instead:
-		if !stmt.sep_before {
-			parser.next_stmt_no_sep_before = true
-		}
+		if !stmt.sep_before do parser.next_stmt_no_sep_before = true
 		body := parse_stmt(parser) or_return
 		if accept(tokens, .Else) {
 			defer if err != nil {
 				drop_stmt(&body)
 			}
 			// pass the no_sep_before to the else branch as well:
-			if !stmt.sep_before {
-				parser.next_stmt_no_sep_before = true
-			}
+			if !stmt.sep_before do parser.next_stmt_no_sep_before = true
 			else_body := parse_stmt(parser) or_return
 			stmt.kind = IfStmt{new_clone(condition), new_clone(body), new_clone(else_body)}
 			return
@@ -467,18 +468,72 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 			stmt.kind = IfStmt{new_clone(condition), new_clone(body), nil}
 			return
 		}
+	case .Switch:
+		condition := parse_stmt(parser) or_return
+		defer if err != nil {
+			drop_stmt(&condition)
+		}
+		if !accept(tokens, .LeftBrace) {
+			return {}, "expected `{` after condition of switch statement"
+		}
+		switch_cases := make([dynamic]SwitchCase, parser.allocator)
+		defer if err != nil {
+			for &ca in switch_cases {
+				drop_stmt(&ca.body)
+			}
+			delete(switch_cases)
+		}
+		for {
+			if len(tokens) == 0 {
+				return {}, "switch statement was not closed with `}`"
+			}
+			if accept(tokens, .RightBrace) {
+				break
+			}
+			val := expect_const_value(parser) or_return
+			if !accept(tokens, .Colon) {
+				return {}, "expected `:` after condition of switch statement"
+			}
+			// pass the no_sep_before to every individual case
+			if !stmt.sep_before do parser.next_stmt_no_sep_before = true
+			body := parse_stmt(parser) or_return
+			append(&switch_cases, SwitchCase{val, body})
+		}
+		else_body: Maybe(^Stmt) = nil
+		if accept(tokens, .Else) {
+			// pass the no_sep_before to the else branch as well:
+			if !stmt.sep_before do parser.next_stmt_no_sep_before = true
+			else_body = new_clone(parse_stmt(parser) or_return)
+		}
+		stmt.kind = SwitchStmt{new_clone(condition), switch_cases[:], else_body}
+		return
 	case .LeftBrace:
 		if !stmt.sep_before {
 			parser.next_stmt_no_sep_before = true
 		}
 		statements := parse_stmts_until(parser, .RightBrace) or_return
 		stmt.kind = Block{statements}
+
 		return
 	case .LeftBracket:
 		// for lookup tables e.g. ["HELLO" = "hallo", "WHATSUP" = "wie geht's?"]
 		unimplemented()
 	}
 	return {}, tprint("invalid start of expression", tok)
+}
+
+expect_const_value :: proc(using parser: ^Parser) -> (val: Value, err: Error) {
+	tok, ok := eat(tokens)
+	if !ok {
+		return {}, "no tokens left to start const value"
+	}
+	#partial switch tok.ty {
+	case .Number:
+		return Value(tok.number), nil
+	case .String:
+		return Value(tok.str), nil
+	}
+	return {}, tprint("invalid token for const value: ", tok)
 }
 
 token_behind_next_closing_paren :: proc(tokens: []Token) -> (token_ty: TokenTy, ok: bool) {

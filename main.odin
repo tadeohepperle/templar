@@ -4,12 +4,34 @@ package templar
 import "core:fmt"
 print :: fmt.println
 main :: proc() {
-	// STR :: `rep3(foo) = {foo ","  foo "," foo}`
-	// STR :: `foo(a,b) = {b a b} `
-	// STR :: `foo(a) = if a == "hello" {"wow"} else "meh"`
-	// STR :: `rep3(foo: bool) = {foo ","  foo "," foo}`
 
-	// STR :: `TWO(x) = {x x}    FOO(s) = {if s == "tadeo" { "yay " TWO({ "buba"}) } else "nay"}`
+
+	S :: `
+	sentence(a, b, dmg) = {
+		#cap a "deal" if a != "you" +"s" "{dmg} damage to" b +"."
+	}
+	
+	`
+
+
+	run_and_show(S, "sentence", "you", "the bandit", 3)
+	run_and_show(S, "sentence", "the bandit", "you", 5)
+	if true {
+		return
+	}
+	ROMAN :: `roman(x: int) = switch x {
+		1: "I",
+		2: "II",
+		3: "III",
+		4: "IV",
+		5: "V",
+		6: "VI",
+	} else "{x} is too high"
+	`
+
+
+	run_and_show(ROMAN, "roman", 18)
+	if true {return}
 
 	run_and_show(`REROLLS_LEFT(x: int) = { x "Reroll" if x != 1 +"s" "left" }`, "REROLLS_LEFT", 1)
 	run_and_show(

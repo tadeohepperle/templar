@@ -60,7 +60,7 @@ TokenTy :: enum {
 	LeftParen,
 	RightParen,
 	Colon,
-	In,
+	Switch,
 	Ident,
 	String, // "Hello"
 	StringCurlyStart, //  } and I love you!"
@@ -83,8 +83,8 @@ ident_or_keyword_token :: proc(ident_name: string) -> TokenTy {
 	switch ident_name {
 	case "if":
 		return .If
-	case "in":
-		return .In
+	case "switch":
+		return .Switch
 	case "else":
 		return .Else
 	case "and":

@@ -170,6 +170,7 @@ _execute_stmt :: proc(using ctx: ^ExecutionCtx, stmt: Stmt) -> ErrorOrReturn {
 		} else {
 			decl, ok := module.decls[this.ident]
 			if !ok {
+				print("EXECUTE IDENT", this)
 				return tprint("No declaration named", this.ident)
 			}
 			if len(decl.args) > 0 {
@@ -237,6 +238,24 @@ _execute_stmt :: proc(using ctx: ^ExecutionCtx, stmt: Stmt) -> ErrorOrReturn {
 		} else if else_body, has_else := this.else_body.(^Stmt); has_else {
 			_execute_stmt(ctx, else_body^) or_return
 		}
+		return nil
+	case SwitchStmt:
+		cond_val, cond_val_err := _evaluate_stmt(module, this.condition^, env)
+		if err, has_err := cond_val_err.(string); has_err {
+			return err
+		}
+		found_case := false
+		for ca in this.cases {
+			if cond_val == ca.val {
+				_execute_stmt(ctx, ca.body) or_return
+				found_case = true
+				break
+			}
+		}
+		if else_body, has_else := this.else_body.(^Stmt); has_else && !found_case {
+			_execute_stmt(ctx, else_body^) or_return
+		}
+		return nil
 	case Decl:
 		return nil
 	case Logical:
@@ -310,6 +329,8 @@ _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err
 			}
 			return strings.to_string(b), nil
 		}
+	case SwitchStmt:
+		unimplemented()
 	case IfStmt:
 		unimplemented()
 	case Decl:
