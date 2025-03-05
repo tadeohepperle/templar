@@ -1,24 +1,8 @@
 package templar
 
-
 import "core:fmt"
 print :: fmt.println
 main :: proc() {
-
-
-	S :: `
-	sentence(a, b, dmg) = {
-		#cap a "deal" if a != "you" +"s" "{dmg} damage to" b +"."
-	}
-	
-	`
-
-
-	run_and_show(S, "sentence", "you", "the bandit", 3)
-	run_and_show(S, "sentence", "the bandit", "you", 5)
-	if true {
-		return
-	}
 	ROMAN :: `roman(x: int) = switch x {
 		1: "I",
 		2: "II",

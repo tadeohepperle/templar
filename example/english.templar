@@ -1,0 +1,5 @@
+LANG_NAME = "English"
+WHATS_UP = "What's up?"
+INTRO(name: str, age: int) = "I am {name} and {age} years old."
+
+DATE(year: int, month: int, day: int) = "Today is {year}/{month}/{day}"

@@ -110,15 +110,15 @@ SwitchCase :: struct {
 	body: Stmt,
 }
 
-drop_module :: proc(mod: ^Module, allocator := context.allocator) {
+drop_module :: proc(mod: ^Module) {
 	for ident, &decl in mod.decls {
-		delete(decl.args, allocator)
-		drop_stmt(decl.value, allocator)
-		free(decl.value, allocator)
+		delete(decl.args)
+		drop_stmt(decl.value)
+		free(decl.value)
 	}
 	delete(mod.decls)
 }
-drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
+drop_stmt :: proc(stmt: ^Stmt) {
 	switch s in stmt.kind {
 	case CapitalizeStmt:
 	case Ident:
@@ -132,7 +132,7 @@ drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 		free(s.inner)
 	case Call:
 		for &a in s.args {
-			drop_stmt(&a, allocator)
+			drop_stmt(&a)
 		}
 		delete(s.args)
 	case Block:
@@ -142,12 +142,12 @@ drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 		delete(s.statements)
 	case Decl:
 		delete(s.args)
-		drop_stmt(s.value, allocator)
+		drop_stmt(s.value)
 		free(s.value)
 	case Logical:
-		drop_stmt(s.a, allocator)
+		drop_stmt(s.a)
 		free(s.a)
-		drop_stmt(s.b, allocator)
+		drop_stmt(s.b)
 		free(s.b)
 	case IfStmt:
 		drop_stmt(s.condition)
@@ -175,29 +175,30 @@ drop_stmt :: proc(stmt: ^Stmt, allocator := context.allocator) {
 Error :: Maybe(string)
 parse_module :: proc(tokens: []Token, allocator: runtime.Allocator) -> (mod: Module, err: Error) {
 	tokens := tokens
-	parser := Parser{&tokens, allocator, make([dynamic]map[string]None, context.allocator), false}
+	parser := Parser{&tokens, make([dynamic]map[string]None, context.allocator), false}
 	defer {
 		for env in parser.env_stack {
 			delete(env)
 		}
 		delete(parser.env_stack)
 	}
-
-	mod.decls = make(map[string]Decl, allocator)
-	defer if err != nil {
-		drop_module(&mod)
-	}
-
-
-	for len(tokens) > 0 {
-		stmt := parse_stmt(&parser) or_return
-		if decl, ok := stmt.kind.(Decl); ok {
-			mod.decls[decl.ident] = decl
-		} else {
-			err_str := fmt.tprint("top level scope only allows decls, got:", stmt)
-			return {}, err_str
+	{
+		// parsing code uses the explicitly specified allocator:
+		context.allocator = allocator
+		mod.decls = make(map[string]Decl, allocator)
+		defer if err != nil {
+			drop_module(&mod)
 		}
+		for len(tokens) > 0 {
+			stmt := parse_stmt(&parser) or_return
+			if decl, ok := stmt.kind.(Decl); ok {
+				mod.decls[decl.ident] = decl
+			} else {
+				err_str := fmt.tprint("top level scope only allows decls, got:", stmt)
+				return {}, err_str
+			}
 
+		}
 	}
 	return mod, nil
 }
@@ -260,7 +261,7 @@ parse_fmt_string :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		return stmt, nil
 	}
 	if _, ok := stmt.kind.(StrLiteral); ok && parser.next_stmt_no_sep_before {
-		statements := make([dynamic]Stmt, parser.allocator)
+		statements := make([dynamic]Stmt)
 		defer if err != nil {
 			for &s in statements {
 				drop_stmt(&s)
@@ -293,7 +294,7 @@ parse_or :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	stmt = parse_and(parser) or_return
 	if accept(tokens, .Or) {
 		other := parse_and(parser) or_return
-		stmt.kind = Logical{new_clone(stmt, allocator), new_clone(other, allocator), .Or}
+		stmt.kind = Logical{new_clone(stmt), new_clone(other), .Or}
 	}
 	return stmt, nil
 }
@@ -301,7 +302,7 @@ parse_and :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	stmt = parse_cmp(parser) or_return
 	if accept(tokens, .And) {
 		other := parse_cmp(parser) or_return
-		stmt.kind = Logical{new_clone(stmt, allocator), new_clone(other, allocator), .And}
+		stmt.kind = Logical{new_clone(stmt), new_clone(other), .And}
 	}
 	return stmt, nil
 }
@@ -324,7 +325,7 @@ parse_cmp :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	for t in TABLE {
 		if accept(tokens, t.ty) {
 			other := parse_single(parser) or_return
-			stmt.kind = Logical{new_clone(stmt, allocator), new_clone(other, allocator), t.op}
+			stmt.kind = Logical{new_clone(stmt), new_clone(other), t.op}
 			break
 		}
 	}
@@ -334,7 +335,6 @@ parse_cmp :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 
 Parser :: struct {
 	tokens:                  ^[]Token,
-	allocator:               runtime.Allocator,
 	env_stack:               [dynamic]map[string]None,
 	next_stmt_no_sep_before: bool,
 }
@@ -348,7 +348,7 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	}
 	is_not := accept(tokens, .Not)
 	defer if is_not && err == nil {
-		stmt.kind = LogicalNot{new_clone(stmt, allocator)}
+		stmt.kind = LogicalNot{new_clone(stmt)}
 	}
 
 	tok, ok := eat(tokens)
@@ -389,15 +389,15 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 			stmt.kind = Decl {
 				ident = ident,
 				args  = nil,
-				value = new_clone(value, allocator),
+				value = new_clone(value),
 			}
 			return
 		} else if accept(tokens, .LeftParen) {
 			if tok_behind, ok := token_behind_next_closing_paren(tokens^);
 			   ok && tok_behind == .Equal {
 				// expect function definition
-				decl_args := make([dynamic]DeclArg, allocator)
-				env := make(map[string]None, allocator)
+				decl_args := make([dynamic]DeclArg)
+				env := make(map[string]None)
 				for {
 					if accept(tokens, .RightParen) {
 						break
@@ -491,7 +491,7 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		if !accept(tokens, .LeftBrace) {
 			return {}, "expected `{` after condition of switch statement"
 		}
-		switch_cases := make([dynamic]SwitchCase, parser.allocator)
+		switch_cases := make([dynamic]SwitchCase)
 		defer if err != nil {
 			for &ca in switch_cases {
 				drop_stmt(&ca.body)
@@ -578,7 +578,7 @@ token_behind_next_closing_paren :: proc(tokens: []Token) -> (token_ty: TokenTy, 
 
 // // also skips over the last token
 parse_stmts_until :: proc(using parser: ^Parser, until: TokenTy) -> (stmts: []Stmt, err: Error) {
-	arr := make([dynamic]Stmt, allocator)
+	arr := make([dynamic]Stmt)
 	defer if err != nil {
 		for &stmt in arr {
 			drop_stmt(&stmt)

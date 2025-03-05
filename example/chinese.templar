@@ -1,0 +1,4 @@
+LANG_NAME = "中文"
+WHATS_UP = "怎么样？"
+INTRO(name: str, age: int) = "我是{name}，今年{age}岁。"
+DATE(year: int, month: int, day: int) = "今天是{year}年{month}月{day}日"

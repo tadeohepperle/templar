@@ -7,7 +7,9 @@ tests :: proc(t: ^testing.T) {
 
 	CAP :: `
 	test(a, b, dmg) = {
-		#cap a "deal" if a != "you" +"s" "{dmg} damage to" b +"."
+		#cap a "deal" 
+        if a != "you" +"s"
+        "{dmg} damage to" b +"."
 	}`
 
 
