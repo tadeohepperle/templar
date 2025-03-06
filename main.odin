@@ -15,8 +15,6 @@ main :: proc() {
 
 
 	run_and_show(ROMAN, "roman", 18)
-	if true {return}
-
 	run_and_show(`REROLLS_LEFT(x: int) = { x "Reroll" if x != 1 +"s" "left" }`, "REROLLS_LEFT", 1)
 	run_and_show(
 		`greeting(name, age) = "I am {name} and {more(age)} years old."    more(x) = {x +"000"}`,

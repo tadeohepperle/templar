@@ -346,11 +346,12 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 		stmt.sep_before = false
 		parser.next_stmt_no_sep_before = false
 	}
-	is_not := accept(tokens, .Not)
-	defer if is_not && err == nil {
-		stmt.kind = LogicalNot{new_clone(stmt)}
+	if accept(tokens, .Not) {
+		child := parse_single(parser) or_return
+		child.sep_before = stmt.sep_before
+		stmt.kind = LogicalNot{new_clone(child)}
+		return
 	}
-
 	tok, ok := eat(tokens)
 	if !ok {
 		return {}, "no tokens left to start statement"
@@ -370,6 +371,11 @@ parse_single :: proc(using parser: ^Parser) -> (stmt: Stmt, err: Error) {
 	case .Number:
 		stmt.kind = IntLiteral {
 			number = tok.val.number,
+		}
+		return
+	case .BoolLiteral:
+		stmt.kind = BoolLiteral {
+			is_true = tok.is_true,
 		}
 		return
 	case .Return:

@@ -74,37 +74,42 @@ TokenTy :: enum {
 	Not,
 	BoolType,
 	IntType,
+	BoolLiteral,
 	StringType,
 	Return,
 	Todo,
 	Capitalize,
 }
-ident_or_keyword_token :: proc(ident_name: string) -> TokenTy {
+ident_or_keyword_token :: #force_inline proc "contextless" (ident_name: string) -> Token {
 	switch ident_name {
 	case "if":
-		return .If
+		return Token{ty = .If}
 	case "switch":
-		return .Switch
+		return Token{ty = .Switch}
 	case "else":
-		return .Else
+		return Token{ty = .Else}
 	case "and":
-		return .And
+		return Token{ty = .And}
 	case "or":
-		return .Or
+		return Token{ty = .Or}
 	case "bool":
-		return .BoolType
+		return Token{ty = .BoolType}
 	case "int":
-		return .IntType
+		return Token{ty = .IntType}
 	case "str":
-		return .StringType
+		return Token{ty = .StringType}
 	case "return":
-		return .Return
+		return Token{ty = .Return}
 	case "#cap":
-		return .Capitalize
+		return Token{ty = .Capitalize}
 	case "#todo":
-		return .Todo
+		return Token{ty = .Todo}
+	case "true":
+		return Token{ty = .BoolLiteral, val = {is_true = true}}
+	case "false":
+		return Token{ty = .BoolLiteral, val = {is_true = false}}
 	}
-	return .Ident
+	return Token{ty = .Ident, val = {str = ident_name}}
 }
 
 read_number :: proc(s: ^Tokenizer) -> Token {
@@ -171,8 +176,9 @@ read_token :: proc(s: ^Tokenizer) -> Token {
 			}
 		}
 		ident_name := s.source[start_byte:s.peek.byte_idx]
-		ty := ident_or_keyword_token(ident_name)
-		return Token{ty, {str = ident_name}, start_byte}
+		token := ident_or_keyword_token(ident_name)
+		token.byte_idx = start_byte
+		return token
 	case .DoubleQuote:
 		return advance_to_get_string_token(s, false)
 	case .LeftBrace:

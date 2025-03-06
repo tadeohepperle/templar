@@ -394,7 +394,7 @@ _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err
 		}
 		panic("invalid op, should have been handled above")
 	case LogicalNot:
-		val := _evaluate_stmt(module, stmt, env) or_return
+		val := _evaluate_stmt(module, this.inner^, env) or_return
 		if is_true, ok := val.(bool); ok {
 			return !is_true, nil
 		} else {

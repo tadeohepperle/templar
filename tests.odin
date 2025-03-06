@@ -67,6 +67,12 @@ tests :: proc(t: ^testing.T) {
 		3,
 		false,
 	)
+
+	LOGICAL :: `test(a: bool, b:bool) =  if !b != a "same" else "different"`
+	expect(t, LOGICAL, "same", true, true)
+	expect(t, LOGICAL, "same", false, false)
+	expect(t, LOGICAL, "different", false, true)
+	expect(t, LOGICAL, "different", true, false)
 }
 expect :: proc(t: ^testing.T, src: string, expected: string, args: ..Value) {
 	res, err := run(src, "test", args)

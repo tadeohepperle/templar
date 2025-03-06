@@ -10,17 +10,9 @@ main :: proc() {
 		fmt.println("Error:", err)
 		return
 	}
-	fmt.println("Loaded", n_langs, "languages:", get_all_language_names())
+	fmt.println("Loaded", n_langs, "languages:", get_all_languages())
 
-	assert(set_language("Deutsch"))
-
-	print(tr("WHATS_UP"))
-	print(tr("INTRO", "Tadeo", 24))
-	print(tr("DATE", 2017, 3, 16))
-
-	print("-----------------")
-
-	assert(set_language("English"))
+	assert(set_language("german"))
 
 	print(tr("WHATS_UP"))
 	print(tr("INTRO", "Tadeo", 24))
@@ -28,7 +20,15 @@ main :: proc() {
 
 	print("-----------------")
 
-	assert(set_language("中文"))
+	assert(set_language("english"))
+
+	print(tr("WHATS_UP"))
+	print(tr("INTRO", "Tadeo", 24))
+	print(tr("DATE", 2017, 3, 16))
+
+	print("-----------------")
+
+	assert(set_language("chinese"))
 
 	print(tr("WHATS_UP"))
 	print(tr("INTRO", "Tadeo", 24))
