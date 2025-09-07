@@ -32,7 +32,15 @@ value_to_ty :: proc "contextless" (val: Value) -> Type {
 	return .None
 }
 
-run :: proc(source: string, decl_name: string, arg_values: []Value) -> (res: string, err: Error) {
+run :: proc(
+	source: string,
+	decl_name: string,
+	arg_values: []Value,
+	allocator := context.temp_allocator,
+) -> (
+	res: string,
+	err: Error,
+) {
 	tokens := tokenize(source) or_return
 	// for tok in tokens {
 	// 	print(tok)
@@ -50,7 +58,8 @@ run :: proc(source: string, decl_name: string, arg_values: []Value) -> (res: str
 	defer {
 		drop_module(&mod)
 	}
-	res = execute(mod, decl_name, arg_values) or_return
+	builder := builder(allocator)
+	res = execute(mod, decl_name, arg_values, &builder) or_return
 	return res, nil
 }
 
@@ -69,20 +78,19 @@ execute :: proc(
 	module: Module,
 	decl_name: string,
 	arg_values: []Value,
-	allocator := context.temp_allocator,
+	builder: ^strings.Builder,
 ) -> (
 	res: string,
 	err: Error,
 ) {
+	assert(builder != nil)
 	if decl, ok := module.decls[decl_name]; ok {
 		// shortcut for simple key value declarations:
 		if str_literal, ok := decl.value.kind.(StrLiteral); ok {
 			return str_literal.str, nil
 		}
-
-
 		env := env_for_values(arg_values, decl.args) or_return
-		ctx := ExecutionCtx{module, env, builder(allocator), false, false}
+		ctx := ExecutionCtx{module, env, builder, false, false}
 		defer if err != nil {
 			delete(ctx.b.buf)
 		}
@@ -90,7 +98,7 @@ execute :: proc(
 		if err, is_err := err.(string); is_err {
 			return {}, err
 		}
-		return strings.to_string(ctx.b), nil
+		return strings.to_string(ctx.b^), nil
 	} else {
 		return {}, tprint("ERROR(", decl_name, " is undefined)", sep = "")
 	}
@@ -122,7 +130,7 @@ Return :: struct {}
 ExecutionCtx :: struct {
 	module:          Module,
 	env:             Env,
-	b:               Builder,
+	b:               ^Builder,
 	no_sep_before:   bool,
 	capitalize_next: bool,
 }
@@ -142,16 +150,16 @@ _ctx_write_value :: #force_inline proc(ctx: ^ExecutionCtx, val: Value) {
 			ru, ru_size := utf8.decode_rune(val)
 			if ru_size > 0 {
 				ru_upper := unicode.to_upper(ru)
-				strings.write_rune(&ctx.b, ru_upper) // first character in uppercase
-				write(&ctx.b, val[ru_size:]) // rest of string
+				strings.write_rune(ctx.b, ru_upper) // first character in uppercase
+				write(ctx.b, val[ru_size:]) // rest of string
 			}
 		} else {
-			write(&ctx.b, val)
+			write(ctx.b, val)
 		}
 	case int:
-		fmt.sbprint(&ctx.b, val)
+		fmt.sbprint(ctx.b, val)
 	case bool:
-		fmt.sbprint(&ctx.b, val)
+		fmt.sbprint(ctx.b, val)
 	}
 	ctx.capitalize_next = false
 }
@@ -319,8 +327,8 @@ _evaluate_stmt :: proc(module: Module, stmt: Stmt, env: Env) -> (val: Value, err
 		case 1:
 			return _evaluate_stmt(module, this.statements[0], env)
 		case:
-			b := builder()
-			ctx := ExecutionCtx{module, env, b, false, false}
+			b := builder(context.temp_allocator)
+			ctx := ExecutionCtx{module, env, &b, false, false}
 			loop: for child in this.statements {
 				switch return_or_err in _execute_stmt(&ctx, child) {
 				case Return:

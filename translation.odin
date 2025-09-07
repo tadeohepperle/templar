@@ -16,15 +16,26 @@ import "core:time"
 cleanup_languages :: proc() {
 	_global_cleanup()
 }
+tr_to_builder :: proc(s: string, builder: ^strings.Builder, args: ..Value) -> (ok: bool) {
+	translated, err := execute(GLOBAL.CURRENT.mod, s, args, builder)
+	if err, is_err := err.(string); is_err {
+		strings.builder_reset(builder)
+		strings.write_string(builder, err)
+		return false
+	}
+	return true
+}
+
 tr :: proc(
 	s: string,
 	args: ..Value,
-	allocator := context.temp_allocator,
+	allocator := context.allocator,
 ) -> (
 	res: string,
 	ok: bool,
 ) #optional_ok {
-	translated, err := execute(GLOBAL.CURRENT.mod, s, args, allocator)
+	builder := builder(allocator)
+	translated, err := execute(GLOBAL.CURRENT.mod, s, args, &builder)
 	if err, is_err := err.(string); is_err {
 		return err, false
 	}
@@ -83,7 +94,8 @@ load_language_from_path :: proc(file_path: string) -> Error {
 	lang.mod = parse_module(tokens, arena) or_return
 	lang.slugname = strings.clone(slugname, arena)
 	// give languages opportunity to declare their own name for example as LANG_NAME = "中文", while the file can be named chinese.templar
-	if name, err := execute(lang.mod, LANG_NAME_DECL, nil); err == nil {
+	tbuilder := builder(context.allocator)
+	if name, err := execute(lang.mod, LANG_NAME_DECL, nil, &tbuilder); err == nil {
 		lang.native_name = strings.clone(name, arena)
 	} else {
 		lang.native_name = strings.clone(slugname, arena)
@@ -198,7 +210,8 @@ hot_reload_languages :: proc() {
 		log.info("Hot reloaded ", lang.file_path)
 		lang.source = source
 		lang.mod = module
-		if name, err := execute(lang.mod, LANG_NAME_DECL, nil); err == nil {
+		tbuilder := builder(context.allocator)
+		if name, err := execute(lang.mod, LANG_NAME_DECL, nil, &tbuilder); err == nil {
 			lang.native_name = strings.clone(name, arena)
 		} else {
 			lang.native_name = strings.clone(lang.slugname, arena)

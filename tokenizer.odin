@@ -346,10 +346,10 @@ char_type :: proc "contextless" (ch: rune) -> CharType {
 	}
 }
 CHAR_TYPES: [256]CharType = char_types()
-char_types :: proc() -> (table: [256]CharType) {
-	set :: proc(table: ^[256]CharType, s: string, c: CharType) {
+char_types :: proc "contextless" () -> (table: [256]CharType) {
+	set :: proc "contextless" (table: ^[256]CharType, s: string, c: CharType) {
 		for ch in s {
-			assert(utf8.rune_size(ch) == 1)
+			assert_contextless(utf8.rune_size(ch) == 1)
 			table[u8(ch)] = c
 		}
 	}
